@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  monitor-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes-monitor-server
+    ports:
+      - "8090:8080"
+    environment:
+      - DISPLAY=:0
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/stream:/tmp/stream
+    networks:
+      - hermes-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  stream-encoder:
+    image: ubuntu:22.04
+    container_name: hermes-stream-encoder
+    entrypoint: /bin/bash
+    command: 
+      - -c
+      - |
+        apt-get update && apt-get install -y ffmpeg x11-utils xdotool
+        mkdir -p /tmp/stream
+        while true; do
+          DISPLAY=:0 ffmpeg \
+            -f x11grab \
+            -video_size 1920x1080 \
+            -framerate 30 \
+            -i :0 \
+            -c:v libx264 \
+            -preset ultrafast \
+            -tune zerolatency \
+            -pix_fmt yuv420p \
+            -f mpegts - | \
+            ffmpeg -i - \
+            -c copy \
+            -f hls \
+            -hls_time 1 \
+            -hls_list_size 3 \
+            -hls_flags delete_segments \
+            /tmp/stream/stream.m3u8 2>/dev/null
+          sleep 5
+        done
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/stream:/tmp/stream
+    networks:
+      - hermes-network
+    restart: unless-stopped
+    depends_on:
+      - monitor-server
+
+  cloudflare-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: hermes-cloudflare-tunnel
+    command: tunnel --no-autoupdate run --token eyJhIjoiMTNiMjZlNjFhY2M2MmZkMDEwMzA2NGI4YWY1ZmZkMGEiLCJ0IjoiZGM4MjU5NzktMGYzYy00ODRiLTg5ZmQtN2IwMWQ0MTZlYzU1IiwicyI6Ik9XSTVOREV4TkRNdE5tUXlaUzAwT1dVMUxUbGpNMkl0TVRZek1XUXdaVFppT1RVNSJ9
+    networks:
+      - hermes-network
+    restart: unless-stopped
+    depends_on:
+      - monitor-server
+
+networks:
+  hermes-network:
+    driver: bridge
